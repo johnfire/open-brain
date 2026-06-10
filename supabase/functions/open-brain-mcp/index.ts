@@ -81,12 +81,17 @@ async function normalizePeople(people: string[]): Promise<string[]> {
     aliasMap.set(row.alias.toLowerCase(), row.canonical_name);
   }
   const exclusions = new Set<string>(
-    (exclusionRes.data || []).map((r: { name: string }) => r.name.toLowerCase()),
+    (exclusionRes.data || []).map((r: { name: string }) =>
+      r.name.toLowerCase(),
+    ),
   );
-  return [...new Set(
-    people.map((p) => aliasMap.get(p.toLowerCase()) ?? p)
-      .filter((p) => !exclusions.has(p.toLowerCase()))
-  )];
+  return [
+    ...new Set(
+      people
+        .map((p) => aliasMap.get(p.toLowerCase()) ?? p)
+        .filter((p) => !exclusions.has(p.toLowerCase())),
+    ),
+  ];
 }
 
 async function fetchTopicHints(): Promise<string> {
@@ -96,11 +101,17 @@ async function fetchTopicHints(): Promise<string> {
     .eq("active", true);
   if (!data || data.length === 0) return "";
   return data
-    .map((h: { topic: string; description: string }) => `- ${h.topic}: ${h.description}`)
+    .map(
+      (h: { topic: string; description: string }) =>
+        `- ${h.topic}: ${h.description}`,
+    )
     .join("\n");
 }
 
-async function extractMetadata(text: string, hintBlock = ""): Promise<Record<string, unknown>> {
+async function extractMetadata(
+  text: string,
+  hintBlock = "",
+): Promise<Record<string, unknown>> {
   const hintSection = hintBlock
     ? `\n\nThe user works across many domains. Here are known topic areas to be aware of when extracting topics. Use these as guidance but also extract any other relevant topics you identify:\n\n${hintBlock}`
     : "";
@@ -136,16 +147,38 @@ Only extract what's explicitly there.${hintSection}`,
   }
 }
 
-// --- Format helper ---
+// --- Format helpers ---
+
+const TRUNCATE_WORDS = 80;
+const TRUNCATION_NOTE = "(truncated — get_thought for full text)";
+
+/** First N words of text; flags whether anything was cut. */
+function truncateWords(
+  text: string,
+  maxWords = TRUNCATE_WORDS,
+): { text: string; truncated: boolean } {
+  const words = text.split(/\s+/).filter(Boolean);
+  if (words.length <= maxWords) return { text, truncated: false };
+  return { text: words.slice(0, maxWords).join(" ") + " …", truncated: true };
+}
 
 function formatThought(
-  t: { id: string; content: string; metadata: Record<string, unknown>; similarity?: number; created_at: string },
-  i: number
+  t: {
+    id: string;
+    content: string;
+    metadata: Record<string, unknown>;
+    similarity?: number;
+    created_at: string;
+  },
+  i: number,
+  truncState?: { any: boolean },
 ): string {
   const m = t.metadata || {};
   const parts: string[] = [];
   if (t.similarity !== undefined) {
-    parts.push(`--- Result ${i + 1} (${(t.similarity * 100).toFixed(1)}% match) ---`);
+    parts.push(
+      `--- Result ${i + 1} (${(t.similarity * 100).toFixed(1)}% match) ---`,
+    );
   } else {
     parts.push(`--- Thought ${i + 1} ---`);
   }
@@ -160,7 +193,9 @@ function formatThought(
     parts.push(`People: ${(m.people as string[]).join(", ")}`);
   if (Array.isArray(m.action_items) && m.action_items.length)
     parts.push(`Actions: ${(m.action_items as string[]).join("; ")}`);
-  parts.push(`\n${t.content}`);
+  const body = truncateWords(t.content);
+  if (body.truncated && truncState) truncState.any = true;
+  parts.push(`\n${body.text}`);
   return parts.join("\n");
 }
 
@@ -193,14 +228,51 @@ server.registerTool(
         match_count: limit,
         filter: {},
       });
-      if (error) return { content: [{ type: "text" as const, text: `Search error: ${error.message}` }], isError: true };
-      if (!data || data.length === 0) return { content: [{ type: "text" as const, text: `No thoughts found matching "${query}".` }] };
-      const results = data.map((t: { id: string; content: string; metadata: Record<string, unknown>; similarity: number; created_at: string }, i: number) =>
-        formatThought(t, i)
+      if (error)
+        return {
+          content: [
+            { type: "text" as const, text: `Search error: ${error.message}` },
+          ],
+          isError: true,
+        };
+      if (!data || data.length === 0)
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `No thoughts found matching "${query}".`,
+            },
+          ],
+        };
+      const truncState = { any: false };
+      const results = data.map(
+        (
+          t: {
+            id: string;
+            content: string;
+            metadata: Record<string, unknown>;
+            similarity: number;
+            created_at: string;
+          },
+          i: number,
+        ) => formatThought(t, i, truncState),
       );
-      return { content: [{ type: "text" as const, text: `Found ${data.length} thought(s):\n\n${results.join("\n\n")}` }] };
+      const note = truncState.any ? `\n\n${TRUNCATION_NOTE}` : "";
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `Found ${data.length} thought(s):\n\n${results.join("\n\n")}${note}`,
+          },
+        ],
+      };
     } catch (err: unknown) {
-      return { content: [{ type: "text" as const, text: `Error: ${(err as Error).message}` }], isError: true };
+      return {
+        content: [
+          { type: "text" as const, text: `Error: ${(err as Error).message}` },
+        ],
+        isError: true,
+      };
     }
   },
 );
@@ -210,15 +282,32 @@ server.registerTool(
   "list_thoughts",
   {
     title: "List Recent Thoughts",
-    description: "List recently captured thoughts with optional filters by type, topic, person, or time range.",
+    description:
+      "List recently captured thoughts with optional filters by type, topic, person, or time range.",
     inputSchema: {
       limit: z.number().optional().default(10),
-      type: z.string().optional().describe("Filter by type: observation, task, idea, reference, person_note"),
+      type: z
+        .string()
+        .optional()
+        .describe(
+          "Filter by type: observation, task, idea, reference, person_note",
+        ),
       topic: z.string().optional().describe("Filter by topic tag"),
       person: z.string().optional().describe("Filter by person mentioned"),
-      days: z.number().optional().describe("Only thoughts from the last N days"),
-      project: z.string().optional().describe("Filter by project (e.g. 'grendel', 'open-brain', 'personal')"),
-      status: z.string().optional().describe("Filter by status: active, completed, superseded, archived"),
+      days: z
+        .number()
+        .optional()
+        .describe("Only thoughts from the last N days"),
+      project: z
+        .string()
+        .optional()
+        .describe(
+          "Filter by project (e.g. 'grendel', 'open-brain', 'personal')",
+        ),
+      status: z
+        .string()
+        .optional()
+        .describe("Filter by status: active, completed, superseded, archived"),
     },
   },
   async ({ limit, type, topic, person, days, project, status }) => {
@@ -239,18 +328,54 @@ server.registerTool(
         q = q.gte("created_at", since.toISOString());
       }
       const { data, error } = await q;
-      if (error) return { content: [{ type: "text" as const, text: `Error: ${error.message}` }], isError: true };
-      if (!data || !data.length) return { content: [{ type: "text" as const, text: "No thoughts found." }] };
-      const results = data.map((t: { id: string; content: string; metadata: Record<string, unknown>; created_at: string }, i: number) => {
-        const m = t.metadata || {};
-        const tags = Array.isArray(m.topics) ? (m.topics as string[]).join(", ") : "";
-        const proj = m.project ? ` | ${m.project}` : "";
-        const stat = m.status && m.status !== "active" ? ` [${m.status}]` : "";
-        return `${i + 1}. [${new Date(t.created_at).toLocaleDateString()}] (${m.type || "??"}${tags ? " - " + tags : ""}${proj}${stat})\n   ID: ${t.id}\n   ${t.content}`;
-      });
-      return { content: [{ type: "text" as const, text: `${data.length} recent thought(s):\n\n${results.join("\n\n")}` }] };
+      if (error)
+        return {
+          content: [{ type: "text" as const, text: `Error: ${error.message}` }],
+          isError: true,
+        };
+      if (!data || !data.length)
+        return {
+          content: [{ type: "text" as const, text: "No thoughts found." }],
+        };
+      const truncState = { any: false };
+      const results = data.map(
+        (
+          t: {
+            id: string;
+            content: string;
+            metadata: Record<string, unknown>;
+            created_at: string;
+          },
+          i: number,
+        ) => {
+          const m = t.metadata || {};
+          const tags = Array.isArray(m.topics)
+            ? (m.topics as string[]).join(", ")
+            : "";
+          const proj = m.project ? ` | ${m.project}` : "";
+          const stat =
+            m.status && m.status !== "active" ? ` [${m.status}]` : "";
+          const body = truncateWords(t.content);
+          if (body.truncated) truncState.any = true;
+          return `${i + 1}. [${new Date(t.created_at).toLocaleDateString()}] (${m.type || "??"}${tags ? " - " + tags : ""}${proj}${stat})\n   ID: ${t.id}\n   ${body.text}`;
+        },
+      );
+      const note = truncState.any ? `\n\n${TRUNCATION_NOTE}` : "";
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `${data.length} recent thought(s):\n\n${results.join("\n\n")}${note}`,
+          },
+        ],
+      };
     } catch (err: unknown) {
-      return { content: [{ type: "text" as const, text: `Error: ${(err as Error).message}` }], isError: true };
+      return {
+        content: [
+          { type: "text" as const, text: `Error: ${(err as Error).message}` },
+        ],
+        isError: true,
+      };
     }
   },
 );
@@ -260,34 +385,60 @@ server.registerTool(
   "thought_stats",
   {
     title: "Thought Statistics",
-    description: "Get a summary of all captured thoughts: totals, types, top topics, and people.",
+    description:
+      "Get a summary of all captured thoughts: totals, types, top topics, and people.",
     inputSchema: {},
   },
   async () => {
     try {
-      const { count } = await supabase.from("thoughts").select("*", { count: "exact", head: true });
-      const { data } = await supabase.from("thoughts").select("metadata, created_at").order("created_at", { ascending: false });
+      const { count } = await supabase
+        .from("thoughts")
+        .select("*", { count: "exact", head: true });
+      const { data } = await supabase
+        .from("thoughts")
+        .select("metadata, created_at")
+        .order("created_at", { ascending: false });
       const types: Record<string, number> = {};
       const topics: Record<string, number> = {};
       const people: Record<string, number> = {};
       for (const r of data || []) {
         const m = (r.metadata || {}) as Record<string, unknown>;
-        if (m.type) types[m.type as string] = (types[m.type as string] || 0) + 1;
-        if (Array.isArray(m.topics)) for (const t of m.topics) topics[t as string] = (topics[t as string] || 0) + 1;
-        if (Array.isArray(m.people)) for (const p of m.people) people[p as string] = (people[p as string] || 0) + 1;
+        if (m.type)
+          types[m.type as string] = (types[m.type as string] || 0) + 1;
+        if (Array.isArray(m.topics))
+          for (const t of m.topics)
+            topics[t as string] = (topics[t as string] || 0) + 1;
+        if (Array.isArray(m.people))
+          for (const p of m.people)
+            people[p as string] = (people[p as string] || 0) + 1;
       }
       const sort = (o: Record<string, number>): [string, number][] =>
-        Object.entries(o).sort((a, b) => b[1] - a[1]).slice(0, 10);
+        Object.entries(o)
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, 10);
       const lines: string[] = [
         `Total thoughts: ${count}`,
         `Date range: ${data?.length ? new Date(data[data.length - 1].created_at).toLocaleDateString() + " → " + new Date(data[0].created_at).toLocaleDateString() : "N/A"}`,
-        "", "Types:", ...sort(types).map(([k, v]) => `  ${k}: ${v}`),
+        "",
+        "Types:",
+        ...sort(types).map(([k, v]) => `  ${k}: ${v}`),
       ];
-      if (Object.keys(topics).length) { lines.push("", "Top topics:"); for (const [k, v] of sort(topics)) lines.push(`  ${k}: ${v}`); }
-      if (Object.keys(people).length) { lines.push("", "People mentioned:"); for (const [k, v] of sort(people)) lines.push(`  ${k}: ${v}`); }
+      if (Object.keys(topics).length) {
+        lines.push("", "Top topics:");
+        for (const [k, v] of sort(topics)) lines.push(`  ${k}: ${v}`);
+      }
+      if (Object.keys(people).length) {
+        lines.push("", "People mentioned:");
+        for (const [k, v] of sort(people)) lines.push(`  ${k}: ${v}`);
+      }
       return { content: [{ type: "text" as const, text: lines.join("\n") }] };
     } catch (err: unknown) {
-      return { content: [{ type: "text" as const, text: `Error: ${(err as Error).message}` }], isError: true };
+      return {
+        content: [
+          { type: "text" as const, text: `Error: ${(err as Error).message}` },
+        ],
+        isError: true,
+      };
     }
   },
 );
@@ -297,10 +448,20 @@ server.registerTool(
   "capture_thought",
   {
     title: "Capture Thought",
-    description: "Save a new thought to the Open Brain. Generates an embedding and extracts metadata automatically.",
+    description:
+      "Save a new thought to the Open Brain. Generates an embedding and extracts metadata automatically.",
     inputSchema: {
-      content: z.string().describe("The thought to capture — a clear, standalone statement that will make sense when retrieved later by any AI"),
-      project: z.string().optional().describe("Project this thought belongs to. Auto-detected from content if omitted."),
+      content: z
+        .string()
+        .describe(
+          "The thought to capture — a clear, standalone statement that will make sense when retrieved later by any AI",
+        ),
+      project: z
+        .string()
+        .optional()
+        .describe(
+          "Project this thought belongs to. Auto-detected from content if omitted.",
+        ),
     },
   },
   async ({ content, project }) => {
@@ -310,20 +471,44 @@ server.registerTool(
         fetchTopicHints().then((hints) => extractMetadata(content, hints)),
       ]);
       const meta = metadata as Record<string, unknown>;
-      if (Array.isArray(meta.people)) meta.people = await normalizePeople(meta.people as string[]);
+      if (Array.isArray(meta.people))
+        meta.people = await normalizePeople(meta.people as string[]);
       const resolvedProject = project ?? detectProject(content);
       const { error } = await supabase.from("thoughts").insert({
-        content, embedding,
-        metadata: { ...meta, source: "mcp", status: "active", project: resolvedProject },
+        content,
+        embedding,
+        metadata: {
+          ...meta,
+          source: "mcp",
+          status: "active",
+          project: resolvedProject,
+        },
       });
-      if (error) return { content: [{ type: "text" as const, text: `Failed to capture: ${error.message}` }], isError: true };
+      if (error)
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Failed to capture: ${error.message}`,
+            },
+          ],
+          isError: true,
+        };
       let confirmation = `Captured as ${meta.type || "thought"} [${resolvedProject}]`;
-      if (Array.isArray(meta.topics) && meta.topics.length) confirmation += ` — ${(meta.topics as string[]).join(", ")}`;
-      if (Array.isArray(meta.people) && meta.people.length) confirmation += ` | People: ${(meta.people as string[]).join(", ")}`;
-      if (Array.isArray(meta.action_items) && meta.action_items.length) confirmation += ` | Actions: ${(meta.action_items as string[]).join("; ")}`;
+      if (Array.isArray(meta.topics) && meta.topics.length)
+        confirmation += ` — ${(meta.topics as string[]).join(", ")}`;
+      if (Array.isArray(meta.people) && meta.people.length)
+        confirmation += ` | People: ${(meta.people as string[]).join(", ")}`;
+      if (Array.isArray(meta.action_items) && meta.action_items.length)
+        confirmation += ` | Actions: ${(meta.action_items as string[]).join("; ")}`;
       return { content: [{ type: "text" as const, text: confirmation }] };
     } catch (err: unknown) {
-      return { content: [{ type: "text" as const, text: `Error: ${(err as Error).message}` }], isError: true };
+      return {
+        content: [
+          { type: "text" as const, text: `Error: ${(err as Error).message}` },
+        ],
+        isError: true,
+      };
     }
   },
 );
@@ -333,22 +518,51 @@ server.registerTool(
   "add_topic_hint",
   {
     title: "Add Topic Hint",
-    description: "Add a new topic area hint to Open Brain so it better recognizes this topic in future thought ingestions.",
+    description:
+      "Add a new topic area hint to Open Brain so it better recognizes this topic in future thought ingestions.",
     inputSchema: {
       topic: z.string().describe("The topic name, e.g. 'quantum computing'"),
-      description: z.string().describe("Brief description of what this topic covers"),
-      category: z.string().optional().default("general").describe("Category grouping: ai, engineering, projects, art, geopolitics, robotics, infrastructure, personal, or a new category"),
+      description: z
+        .string()
+        .describe("Brief description of what this topic covers"),
+      category: z
+        .string()
+        .optional()
+        .default("general")
+        .describe(
+          "Category grouping: ai, engineering, projects, art, geopolitics, robotics, infrastructure, personal, or a new category",
+        ),
     },
   },
   async ({ topic, description, category }) => {
     try {
-      const { error } = await supabase.from("topic_hints")
-        .upsert({ topic, description, category: category ?? "general", active: true }, { onConflict: "topic" })
+      const { error } = await supabase
+        .from("topic_hints")
+        .upsert(
+          { topic, description, category: category ?? "general", active: true },
+          { onConflict: "topic" },
+        )
         .select();
-      if (error) return { content: [{ type: "text" as const, text: `Error: ${error.message}` }], isError: true };
-      return { content: [{ type: "text" as const, text: `Topic hint "${topic}" added to category "${category ?? "general"}".` }] };
+      if (error)
+        return {
+          content: [{ type: "text" as const, text: `Error: ${error.message}` }],
+          isError: true,
+        };
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `Topic hint "${topic}" added to category "${category ?? "general"}".`,
+          },
+        ],
+      };
     } catch (err: unknown) {
-      return { content: [{ type: "text" as const, text: `Error: ${(err as Error).message}` }], isError: true };
+      return {
+        content: [
+          { type: "text" as const, text: `Error: ${(err as Error).message}` },
+        ],
+        isError: true,
+      };
     }
   },
 );
@@ -358,27 +572,54 @@ server.registerTool(
   "list_topic_hints",
   {
     title: "List Topic Hints",
-    description: "List all active topic hints that Open Brain uses to guide topic extraction during ingestion.",
+    description:
+      "List all active topic hints that Open Brain uses to guide topic extraction during ingestion.",
     inputSchema: {
       category: z.string().optional().describe("Optional: filter by category"),
     },
   },
   async ({ category }) => {
     try {
-      let q = supabase.from("topic_hints").select("topic, description, category").eq("active", true).order("category").order("topic");
+      let q = supabase
+        .from("topic_hints")
+        .select("topic, description, category")
+        .eq("active", true)
+        .order("category")
+        .order("topic");
       if (category) q = q.eq("category", category);
       const { data, error } = await q;
-      if (error) return { content: [{ type: "text" as const, text: `Error: ${error.message}` }], isError: true };
-      if (!data || data.length === 0) return { content: [{ type: "text" as const, text: "No topic hints found." }] };
+      if (error)
+        return {
+          content: [{ type: "text" as const, text: `Error: ${error.message}` }],
+          isError: true,
+        };
+      if (!data || data.length === 0)
+        return {
+          content: [{ type: "text" as const, text: "No topic hints found." }],
+        };
       const grouped: Record<string, string[]> = {};
       for (const h of data) {
         if (!grouped[h.category]) grouped[h.category] = [];
         grouped[h.category].push(`  - ${h.topic}: ${h.description}`);
       }
-      const lines = Object.entries(grouped).map(([cat, hints]) => `**${cat}**\n${hints.join("\n")}`);
-      return { content: [{ type: "text" as const, text: `${data.length} active topic hint(s):\n\n${lines.join("\n\n")}` }] };
+      const lines = Object.entries(grouped).map(
+        ([cat, hints]) => `**${cat}**\n${hints.join("\n")}`,
+      );
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `${data.length} active topic hint(s):\n\n${lines.join("\n\n")}`,
+          },
+        ],
+      };
     } catch (err: unknown) {
-      return { content: [{ type: "text" as const, text: `Error: ${(err as Error).message}` }], isError: true };
+      return {
+        content: [
+          { type: "text" as const, text: `Error: ${(err as Error).message}` },
+        ],
+        isError: true,
+      };
     }
   },
 );
@@ -388,27 +629,76 @@ server.registerTool(
   "push_artifact",
   {
     title: "Push Artifact",
-    description: "Push a structured spec or task document from a planning session to Open Brain, tagged for a specific project.",
+    description:
+      "Push a structured spec or task document from a planning session to Open Brain, tagged for a specific project.",
     inputSchema: {
       project: z.string().describe("Project this artifact belongs to"),
       title: z.string().describe("Short descriptive title"),
       spec: z.string().describe("The executable spec"),
-      rationale: z.string().optional().describe("Why we made the key decisions"),
+      rationale: z
+        .string()
+        .optional()
+        .describe("Why we made the key decisions"),
       priority: z.enum(["high", "normal", "low"]).optional().default("normal"),
     },
   },
   async ({ project, title, spec, rationale, priority }) => {
     try {
-      const content = [`# ${title}`, `**Project:** ${project}`, `**Priority:** ${priority ?? "normal"}`, "", "## Spec", spec, ...(rationale ? ["", "## Rationale", rationale] : [])].join("\n");
+      const content = [
+        `# ${title}`,
+        `**Project:** ${project}`,
+        `**Priority:** ${priority ?? "normal"}`,
+        "",
+        "## Spec",
+        spec,
+        ...(rationale ? ["", "## Rationale", rationale] : []),
+      ].join("\n");
       const [embedding] = await Promise.all([getEmbedding(content)]);
-      const { data, error } = await supabase.from("thoughts").insert({
-        content, embedding,
-        metadata: { type: "artifact", source: "claude.ai", status: "pending", project, title, priority: priority ?? "normal", topics: ["artifact", "handoff", project], people: [], action_items: [], dates_mentioned: [] },
-      }).select("id").single();
-      if (error) return { content: [{ type: "text" as const, text: `Failed to push artifact: ${error.message}` }], isError: true };
-      return { content: [{ type: "text" as const, text: `Artifact pushed ✓\nID: ${data.id}\nProject: ${project}\nTitle: ${title}\nStatus: pending\nPriority: ${priority ?? "normal"}\n\nClaude Code can retrieve with: get_artifacts("${project}")` }] };
+      const { data, error } = await supabase
+        .from("thoughts")
+        .insert({
+          content,
+          embedding,
+          metadata: {
+            type: "artifact",
+            source: "claude.ai",
+            status: "pending",
+            project,
+            title,
+            priority: priority ?? "normal",
+            topics: ["artifact", "handoff", project],
+            people: [],
+            action_items: [],
+            dates_mentioned: [],
+          },
+        })
+        .select("id")
+        .single();
+      if (error)
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Failed to push artifact: ${error.message}`,
+            },
+          ],
+          isError: true,
+        };
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `Artifact pushed ✓\nID: ${data.id}\nProject: ${project}\nTitle: ${title}\nStatus: pending\nPriority: ${priority ?? "normal"}\n\nClaude Code can retrieve with: get_artifacts("${project}")`,
+          },
+        ],
+      };
     } catch (err: unknown) {
-      return { content: [{ type: "text" as const, text: `Error: ${(err as Error).message}` }], isError: true };
+      return {
+        content: [
+          { type: "text" as const, text: `Error: ${(err as Error).message}` },
+        ],
+        isError: true,
+      };
     }
   },
 );
@@ -421,34 +711,81 @@ server.registerTool(
     description: "Retrieve pending work artifacts for a specific project.",
     inputSchema: {
       project: z.string().describe("Project to retrieve artifacts for"),
-      status: z.enum(["pending", "claimed", "complete", "failed", "all"]).optional().default("pending"),
+      status: z
+        .enum(["pending", "claimed", "complete", "failed", "all"])
+        .optional()
+        .default("pending"),
       limit: z.number().optional().default(10),
     },
   },
   async ({ project, status, limit }) => {
     try {
-      let q = supabase.from("thoughts").select("id, content, metadata, created_at")
+      let q = supabase
+        .from("thoughts")
+        .select("id, content, metadata, created_at")
         .contains("metadata", { type: "artifact", project })
         .order("created_at", { ascending: false })
         .limit(limit ?? 10);
       if (status && status !== "all") q = q.contains("metadata", { status });
       const { data, error } = await q;
-      if (error) return { content: [{ type: "text" as const, text: `Error: ${error.message}` }], isError: true };
-      if (!data || data.length === 0) return { content: [{ type: "text" as const, text: `No ${status ?? "pending"} artifacts for project '${project}'.` }] };
+      if (error)
+        return {
+          content: [{ type: "text" as const, text: `Error: ${error.message}` }],
+          isError: true,
+        };
+      if (!data || data.length === 0)
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `No ${status ?? "pending"} artifacts for project '${project}'.`,
+            },
+          ],
+        };
       const priorityOrder = { high: 0, normal: 1, low: 2 };
       const sorted = [...data].sort((a, b) => {
-        const pa = priorityOrder[(a.metadata?.priority as keyof typeof priorityOrder) ?? "normal"] ?? 1;
-        const pb = priorityOrder[(b.metadata?.priority as keyof typeof priorityOrder) ?? "normal"] ?? 1;
+        const pa =
+          priorityOrder[
+            (a.metadata?.priority as keyof typeof priorityOrder) ?? "normal"
+          ] ?? 1;
+        const pb =
+          priorityOrder[
+            (b.metadata?.priority as keyof typeof priorityOrder) ?? "normal"
+          ] ?? 1;
         if (pa !== pb) return pa - pb;
-        return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+        return (
+          new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+        );
       });
-      const results = sorted.map((t: { id: string; content: string; metadata: Record<string, unknown>; created_at: string }, i: number) => {
-        const m = t.metadata || {};
-        return `--- Artifact ${i + 1} ---\nID: ${t.id}\nTitle: ${m.title || "(untitled)"}\nStatus: ${m.status} | Priority: ${m.priority}\nCreated: ${new Date(t.created_at).toLocaleDateString()}${m.result ? `\nResult: ${m.result}` : ""}\n\n${t.content}`;
-      });
-      return { content: [{ type: "text" as const, text: `${data.length} artifact(s) for '${project}' [${status ?? "pending"}]:\n\n${results.join("\n\n---\n\n")}` }] };
+      const results = sorted.map(
+        (
+          t: {
+            id: string;
+            content: string;
+            metadata: Record<string, unknown>;
+            created_at: string;
+          },
+          i: number,
+        ) => {
+          const m = t.metadata || {};
+          return `--- Artifact ${i + 1} ---\nID: ${t.id}\nTitle: ${m.title || "(untitled)"}\nStatus: ${m.status} | Priority: ${m.priority}\nCreated: ${new Date(t.created_at).toLocaleDateString()}${m.result ? `\nResult: ${m.result}` : ""}\n\n${t.content}`;
+        },
+      );
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `${data.length} artifact(s) for '${project}' [${status ?? "pending"}]:\n\n${results.join("\n\n---\n\n")}`,
+          },
+        ],
+      };
     } catch (err: unknown) {
-      return { content: [{ type: "text" as const, text: `Error: ${(err as Error).message}` }], isError: true };
+      return {
+        content: [
+          { type: "text" as const, text: `Error: ${(err as Error).message}` },
+        ],
+        isError: true,
+      };
     }
   },
 );
@@ -467,19 +804,61 @@ server.registerTool(
   },
   async ({ id, status, result }) => {
     try {
-      const { data: existing, error: fetchError } = await supabase.from("thoughts").select("metadata").eq("id", id).single();
-      if (fetchError || !existing) return { content: [{ type: "text" as const, text: `Artifact not found: ${id}` }], isError: true };
+      const { data: existing, error: fetchError } = await supabase
+        .from("thoughts")
+        .select("metadata")
+        .eq("id", id)
+        .single();
+      if (fetchError || !existing)
+        return {
+          content: [
+            { type: "text" as const, text: `Artifact not found: ${id}` },
+          ],
+          isError: true,
+        };
       const updatedMetadata = {
-        ...(existing.metadata as Record<string, unknown>), status,
+        ...(existing.metadata as Record<string, unknown>),
+        status,
         ...(result ? { result } : {}),
-        ...(status === "complete" || status === "failed" ? { completed_at: new Date().toISOString() } : {}),
-        ...(status === "claimed" ? { claimed_at: new Date().toISOString() } : {}),
+        ...(status === "complete" || status === "failed"
+          ? { completed_at: new Date().toISOString() }
+          : {}),
+        ...(status === "claimed"
+          ? { claimed_at: new Date().toISOString() }
+          : {}),
       };
-      const { error: updateError } = await supabase.from("thoughts").update({ metadata: updatedMetadata, updated_at: new Date().toISOString() }).eq("id", id);
-      if (updateError) return { content: [{ type: "text" as const, text: `Failed to update: ${updateError.message}` }], isError: true };
-      return { content: [{ type: "text" as const, text: `Artifact ${status} ✓\nID: ${id}${result ? `\nResult: ${result}` : ""}` }] };
+      const { error: updateError } = await supabase
+        .from("thoughts")
+        .update({
+          metadata: updatedMetadata,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", id);
+      if (updateError)
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Failed to update: ${updateError.message}`,
+            },
+          ],
+          isError: true,
+        };
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `Artifact ${status} ✓\nID: ${id}${result ? `\nResult: ${result}` : ""}`,
+          },
+        ],
+      };
     } catch (err: unknown) {
-      return { content: [{ type: "text" as const, text: `Error: ${(err as Error).message}` }], isError: true };
+      return {
+        content: [
+          { type: "text" as const, text: `Error: ${(err as Error).message}` },
+        ],
+        isError: true,
+      };
     }
   },
 );
@@ -495,9 +874,24 @@ server.registerTool(
       "Use this after finding a thought to discover non-obvious cross-domain connections the dream job found.",
     inputSchema: {
       thought_id: z.string().uuid().describe("Starting thought ID"),
-      depth: z.number().optional().default(2).describe("How many hops to traverse (1=direct, 2=connections of connections)"),
-      edge_types: z.array(z.string()).optional().describe("Filter by edge label e.g. ['STRUCTURAL_ANALOG']. Omit for all."),
-      include_unconfirmed: z.boolean().optional().default(true).describe("Include edges not yet reviewed"),
+      depth: z
+        .number()
+        .optional()
+        .default(2)
+        .describe(
+          "How many hops to traverse (1=direct, 2=connections of connections)",
+        ),
+      edge_types: z
+        .array(z.string())
+        .optional()
+        .describe(
+          "Filter by edge label e.g. ['STRUCTURAL_ANALOG']. Omit for all.",
+        ),
+      include_unconfirmed: z
+        .boolean()
+        .optional()
+        .default(true)
+        .describe("Include edges not yet reviewed"),
     },
   },
   async ({ thought_id, depth, edge_types, include_unconfirmed }) => {
@@ -505,8 +899,13 @@ server.registerTool(
       const visited = new Set<string>([thought_id]);
       const frontier: string[] = [thought_id];
       const allEdges: Array<{
-        source_id: string; target_id: string; label: string;
-        weight: number; insight: string; confirmed: boolean | null; id: string;
+        source_id: string;
+        target_id: string;
+        label: string;
+        weight: number;
+        insight: string;
+        confirmed: boolean | null;
+        id: string;
       }> = [];
       const allNodeIds = new Set<string>([thought_id]);
 
@@ -516,9 +915,14 @@ server.registerTool(
         let edgeQuery = supabase
           .from("thought_edges")
           .select("id, source_id, target_id, label, weight, insight, confirmed")
-          .or(frontier.map(id => `source_id.eq.${id},target_id.eq.${id}`).join(","));
+          .or(
+            frontier
+              .map((id) => `source_id.eq.${id},target_id.eq.${id}`)
+              .join(","),
+          );
 
-        if (edge_types && edge_types.length > 0) edgeQuery = edgeQuery.in("label", edge_types);
+        if (edge_types && edge_types.length > 0)
+          edgeQuery = edgeQuery.in("label", edge_types);
 
         if (!include_unconfirmed) {
           edgeQuery = edgeQuery.eq("confirmed", true);
@@ -527,12 +931,20 @@ server.registerTool(
         }
 
         const { data: edges, error } = await edgeQuery;
-        if (error) return { content: [{ type: "text" as const, text: `Graph error: ${error.message}` }], isError: true };
+        if (error)
+          return {
+            content: [
+              { type: "text" as const, text: `Graph error: ${error.message}` },
+            ],
+            isError: true,
+          };
 
         const nextFrontier: string[] = [];
         for (const edge of edges ?? []) {
           allEdges.push(edge);
-          const neighbor = frontier.includes(edge.source_id) ? edge.target_id : edge.source_id;
+          const neighbor = frontier.includes(edge.source_id)
+            ? edge.target_id
+            : edge.source_id;
           if (!visited.has(neighbor)) {
             visited.add(neighbor);
             nextFrontier.push(neighbor);
@@ -546,44 +958,78 @@ server.registerTool(
 
       if (allEdges.length === 0) {
         return {
-          content: [{
-            type: "text" as const,
-            text: `No connections found for thought ${thought_id}.\nThe dream job may not have run yet, or this thought has no structural analogs in the corpus.`,
-          }],
+          content: [
+            {
+              type: "text" as const,
+              text: `No connections found for thought ${thought_id}.\nThe dream job may not have run yet, or this thought has no structural analogs in the corpus.`,
+            },
+          ],
         };
       }
 
-      const nodeIds = [...allNodeIds].filter(id => id !== thought_id);
-      const { data: nodes } = await supabase.from("thoughts").select("id, content, metadata, created_at").in("id", nodeIds);
-      const nodeMap = new Map((nodes ?? []).map((n: { id: string; content: string; metadata: Record<string, unknown>; created_at: string }) => [n.id, n]));
+      const nodeIds = [...allNodeIds].filter((id) => id !== thought_id);
+      const { data: nodes } = await supabase
+        .from("thoughts")
+        .select("id, content, metadata, created_at")
+        .in("id", nodeIds);
+      const nodeMap = new Map(
+        (nodes ?? []).map(
+          (n: {
+            id: string;
+            content: string;
+            metadata: Record<string, unknown>;
+            created_at: string;
+          }) => [n.id, n],
+        ),
+      );
 
-      const lines: string[] = [`Graph from thought ${thought_id} (depth=${depth ?? 2}):\n`];
+      const lines: string[] = [
+        `Graph from thought ${thought_id} (depth=${depth ?? 2}):\n`,
+      ];
       const seenEdges = new Set<string>();
 
       for (const edge of allEdges) {
-        const key = [edge.source_id, edge.target_id].sort().join("|") + "|" + edge.label;
+        const key =
+          [edge.source_id, edge.target_id].sort().join("|") + "|" + edge.label;
         if (seenEdges.has(key)) continue;
         seenEdges.add(key);
 
-        const confirmLabel = edge.confirmed === true ? "[confirmed]" : edge.confirmed === false ? "[rejected]" : "[unreviewed]";
-        lines.push(`── ${edge.label} (${(edge.weight * 100).toFixed(0)}% confidence) ${confirmLabel}`);
+        const confirmLabel =
+          edge.confirmed === true
+            ? "[confirmed]"
+            : edge.confirmed === false
+              ? "[rejected]"
+              : "[unreviewed]";
+        lines.push(
+          `── ${edge.label} (${(edge.weight * 100).toFixed(0)}% confidence) ${confirmLabel}`,
+        );
         lines.push(`   EDGE ID: ${edge.id}`);
         lines.push(`   INSIGHT: ${edge.insight}`);
 
-        const otherId = frontier.includes(edge.source_id) || edge.source_id === thought_id ? edge.target_id : edge.source_id;
+        const otherId =
+          frontier.includes(edge.source_id) || edge.source_id === thought_id
+            ? edge.target_id
+            : edge.source_id;
         const other = nodeMap.get(otherId);
         if (other) {
           const m = other.metadata || {};
-          lines.push(`   CONNECTED THOUGHT [${m.project || "general"} | ${m.type || "?"}]:`);
+          lines.push(
+            `   CONNECTED THOUGHT [${m.project || "general"} | ${m.type || "?"}]:`,
+          );
           lines.push(`   ID: ${other.id}`);
-          lines.push(`   ${other.content.slice(0, 300)}${other.content.length > 300 ? "..." : ""}`);
+          lines.push(`   ${truncateWords(other.content).text}`);
         }
         lines.push("");
       }
 
       return { content: [{ type: "text" as const, text: lines.join("\n") }] };
     } catch (err: unknown) {
-      return { content: [{ type: "text" as const, text: `Error: ${(err as Error).message}` }], isError: true };
+      return {
+        content: [
+          { type: "text" as const, text: `Error: ${(err as Error).message}` },
+        ],
+        isError: true,
+      };
     }
   },
 );
@@ -599,7 +1045,9 @@ server.registerTool(
       "Confirmed edges are used preferentially in graph traversal. Rejected edges are hidden.",
     inputSchema: {
       edge_id: z.string().uuid().describe("The edge ID to confirm or reject"),
-      confirmed: z.boolean().describe("true = real insight, false = reject as noise"),
+      confirmed: z
+        .boolean()
+        .describe("true = real insight, false = reject as noise"),
       note: z.string().optional().describe("Optional note about why"),
     },
   },
@@ -607,11 +1055,30 @@ server.registerTool(
     try {
       const updateData: Record<string, unknown> = { confirmed };
       if (note) updateData.note = note;
-      const { error } = await supabase.from("thought_edges").update(updateData).eq("id", edge_id);
-      if (error) return { content: [{ type: "text" as const, text: `Error: ${error.message}` }], isError: true };
-      return { content: [{ type: "text" as const, text: `Edge ${edge_id} ${confirmed ? "confirmed ✓" : "rejected ✗"}${note ? ` — ${note}` : ""}` }] };
+      const { error } = await supabase
+        .from("thought_edges")
+        .update(updateData)
+        .eq("id", edge_id);
+      if (error)
+        return {
+          content: [{ type: "text" as const, text: `Error: ${error.message}` }],
+          isError: true,
+        };
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `Edge ${edge_id} ${confirmed ? "confirmed ✓" : "rejected ✗"}${note ? ` — ${note}` : ""}`,
+          },
+        ],
+      };
     } catch (err: unknown) {
-      return { content: [{ type: "text" as const, text: `Error: ${(err as Error).message}` }], isError: true };
+      return {
+        content: [
+          { type: "text" as const, text: `Error: ${(err as Error).message}` },
+        ],
+        isError: true,
+      };
     }
   },
 );
@@ -628,26 +1095,61 @@ server.registerTool(
       "This is the primary tool for surfacing non-obvious cross-domain connections.",
     inputSchema: {
       query: z.string().describe("What to search for"),
-      limit: z.number().optional().default(5).describe("Number of vector search entry points"),
+      limit: z
+        .number()
+        .optional()
+        .default(5)
+        .describe("Number of vector search entry points"),
       threshold: z.number().optional().default(0.5),
-      graph_depth: z.number().optional().default(1).describe("Hops to traverse from each entry point"),
+      graph_depth: z
+        .number()
+        .optional()
+        .default(1)
+        .describe("Hops to traverse from each entry point"),
     },
   },
   async ({ query, limit, threshold, graph_depth: _graph_depth }) => {
     try {
       // Step 1: Vector search
       const qEmb = await getEmbedding(query);
-      const { data: vectorResults, error: vectorError } = await supabase.rpc("match_thoughts", {
-        query_embedding: qEmb,
-        match_threshold: threshold,
-        match_count: limit,
-        filter: {},
-      });
-      if (vectorError) return { content: [{ type: "text" as const, text: `Search error: ${vectorError.message}` }], isError: true };
-      if (!vectorResults || vectorResults.length === 0) return { content: [{ type: "text" as const, text: `No thoughts found matching "${query}".` }] };
+      const { data: vectorResults, error: vectorError } = await supabase.rpc(
+        "match_thoughts",
+        {
+          query_embedding: qEmb,
+          match_threshold: threshold,
+          match_count: limit,
+          filter: {},
+        },
+      );
+      if (vectorError)
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Search error: ${vectorError.message}`,
+            },
+          ],
+          isError: true,
+        };
+      if (!vectorResults || vectorResults.length === 0)
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `No thoughts found matching "${query}".`,
+            },
+          ],
+        };
 
-      const lines: string[] = [`=== VECTOR RESULTS (${vectorResults.length} entry points) ===\n`];
-      for (const t of vectorResults) lines.push(formatThought(t, vectorResults.indexOf(t)) + "\n");
+      const truncState = { any: false };
+      const lines: string[] = [
+        `=== VECTOR RESULTS (${vectorResults.length} entry points) ===\n`,
+      ];
+      for (const t of vectorResults)
+        lines.push(
+          formatThought(t, vectorResults.indexOf(t), truncState) + "\n",
+        );
+      if (truncState.any) lines.push(TRUNCATION_NOTE + "\n");
 
       // Step 2: Graph expansion
       const entryIds: string[] = vectorResults.map((t: { id: string }) => t.id);
@@ -665,7 +1167,8 @@ server.registerTool(
           .limit(3);
 
         for (const edge of edges ?? []) {
-          const connectedId = edge.source_id === entryId ? edge.target_id : edge.source_id;
+          const connectedId =
+            edge.source_id === entryId ? edge.target_id : edge.source_id;
           if (seenConnected.has(connectedId)) continue;
           seenConnected.add(connectedId);
 
@@ -677,12 +1180,19 @@ server.registerTool(
 
           if (connectedThought) {
             const m = connectedThought.metadata || {};
-            const confirmLabel = edge.confirmed === true ? "confirmed" : "unreviewed";
-            graphLines.push(`── ${edge.label} from entry ${entryId.slice(0, 8)}... (${(edge.weight * 100).toFixed(0)}% | ${confirmLabel})`);
+            const confirmLabel =
+              edge.confirmed === true ? "confirmed" : "unreviewed";
+            graphLines.push(
+              `── ${edge.label} from entry ${entryId.slice(0, 8)}... (${(edge.weight * 100).toFixed(0)}% | ${confirmLabel})`,
+            );
             graphLines.push(`   EDGE ID: ${edge.id}`);
             graphLines.push(`   INSIGHT: ${edge.insight}`);
-            graphLines.push(`   CONNECTED [${m.project || "general"} | ${m.type || "?"}] ID: ${connectedThought.id}`);
-            graphLines.push(`   ${connectedThought.content.slice(0, 300)}${connectedThought.content.length > 300 ? "..." : ""}`);
+            graphLines.push(
+              `   CONNECTED [${m.project || "general"} | ${m.type || "?"}] ID: ${connectedThought.id}`,
+            );
+            graphLines.push(
+              `   ${truncateWords(connectedThought.content).text}`,
+            );
             graphLines.push("");
           }
         }
@@ -692,12 +1202,161 @@ server.registerTool(
         lines.push(`\n=== GRAPH EXPANSIONS (non-obvious connections) ===\n`);
         lines.push(...graphLines);
       } else {
-        lines.push(`\n=== GRAPH EXPANSIONS ===\nNo cross-domain connections found yet. Run the dream job or wait for tonight's cron.`);
+        lines.push(
+          `\n=== GRAPH EXPANSIONS ===\nNo cross-domain connections found yet. Run the dream job or wait for tonight's cron.`,
+        );
       }
 
       return { content: [{ type: "text" as const, text: lines.join("\n") }] };
     } catch (err: unknown) {
-      return { content: [{ type: "text" as const, text: `Error: ${(err as Error).message}` }], isError: true };
+      return {
+        content: [
+          { type: "text" as const, text: `Error: ${(err as Error).message}` },
+        ],
+        isError: true,
+      };
+    }
+  },
+);
+
+// ─── v2 Tool 13: update_thought_status (spec 3.1) ────────────────────────────
+
+server.registerTool(
+  "update_thought_status",
+  {
+    title: "Update Thought Status",
+    description:
+      "Update the lifecycle status of a thought (usually a task). Call this at session close for " +
+      "every open task that was completed or superseded during the session, BEFORE capturing the new summary. " +
+      "A memory that is confidently wrong is worse than no memory.",
+    inputSchema: {
+      id: z.string().uuid().describe("The thought ID to update"),
+      status: z
+        .enum(["active", "completed", "superseded", "archived"])
+        .describe("New lifecycle status"),
+      reason: z
+        .string()
+        .optional()
+        .describe("Why the status changed — recorded into status_history"),
+    },
+  },
+  async ({ id, status, reason }) => {
+    try {
+      const { data: existing, error: fetchError } = await supabase
+        .from("thoughts")
+        .select("id, metadata")
+        .eq("id", id)
+        .maybeSingle();
+      if (fetchError)
+        return {
+          content: [
+            { type: "text" as const, text: `Error: ${fetchError.message}` },
+          ],
+          isError: true,
+        };
+      if (!existing)
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Error: no thought with id ${id}. Check the ID and try again.`,
+            },
+          ],
+          isError: true,
+        };
+      const meta = (existing.metadata ?? {}) as Record<string, unknown>;
+      const oldStatus = (meta.status as string) ?? "active";
+      const history = Array.isArray(meta.status_history)
+        ? (meta.status_history as unknown[])
+        : [];
+      history.push({
+        status,
+        reason: reason ?? null,
+        ts: new Date().toISOString(),
+      });
+      const { error: updateError } = await supabase
+        .from("thoughts")
+        .update({
+          metadata: { ...meta, status, status_history: history },
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", id);
+      if (updateError)
+        return {
+          content: [
+            { type: "text" as const, text: `Error: ${updateError.message}` },
+          ],
+          isError: true,
+        };
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `Status updated ✓\nID: ${id}\n${oldStatus} → ${status}${reason ? `\nReason: ${reason}` : ""}`,
+          },
+        ],
+      };
+    } catch (err: unknown) {
+      return {
+        content: [
+          { type: "text" as const, text: `Error: ${(err as Error).message}` },
+        ],
+        isError: true,
+      };
+    }
+  },
+);
+
+// ─── v2 Tool 14: get_thought (spec 3.2) ──────────────────────────────────────
+
+server.registerTool(
+  "get_thought",
+  {
+    title: "Get Thought",
+    description:
+      "Fetch one thought by ID with FULL content and metadata. Use after search/list results, " +
+      "which truncate long thoughts to 80 words.",
+    inputSchema: {
+      id: z.string().uuid().describe("The thought ID"),
+    },
+  },
+  async ({ id }) => {
+    try {
+      const { data, error } = await supabase
+        .from("thoughts")
+        .select("id, content, metadata, created_at, updated_at")
+        .eq("id", id)
+        .maybeSingle();
+      if (error)
+        return {
+          content: [{ type: "text" as const, text: `Error: ${error.message}` }],
+          isError: true,
+        };
+      if (!data)
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Error: no thought with id ${id}.`,
+            },
+          ],
+          isError: true,
+        };
+      const lines = [
+        `ID: ${data.id}`,
+        `Captured: ${new Date(data.created_at).toLocaleDateString()}`,
+        `Metadata: ${JSON.stringify(data.metadata ?? {}, null, 2)}`,
+        "",
+        data.content,
+      ];
+      return { content: [{ type: "text" as const, text: lines.join("\n") }] };
+    } catch (err: unknown) {
+      return {
+        content: [
+          { type: "text" as const, text: `Error: ${(err as Error).message}` },
+        ],
+        isError: true,
+      };
     }
   },
 );
@@ -708,9 +1367,10 @@ const app = new Hono();
 
 app.all("*", async (c) => {
   // Support both custom x-brain-key header and standard Authorization: Bearer
-  const provided = c.req.header("x-brain-key")
-    || new URL(c.req.url).searchParams.get("key")
-    || c.req.header("Authorization")?.replace("Bearer ", "");
+  const provided =
+    c.req.header("x-brain-key") ||
+    new URL(c.req.url).searchParams.get("key") ||
+    c.req.header("Authorization")?.replace("Bearer ", "");
   if (!provided || provided !== MCP_ACCESS_KEY) {
     return c.json({ error: "Invalid or missing access key" }, 401);
   }
