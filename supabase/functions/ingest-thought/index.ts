@@ -44,7 +44,7 @@ async function extractMetadata(
   hintBlock = "",
 ): Promise<Record<string, unknown>> {
   const hintSection = hintBlock
-    ? `\n\nThe user works across many domains. Here are known topic areas to be aware of when extracting topics. Use these as guidance but also extract any other relevant topics you identify:\n\n${hintBlock}`
+    ? `\n\nControlled topic vocabulary. FIRST try to match against these known topic areas; only invent a new topic when none of them fits:\n\n${hintBlock}`
     : "";
   const r = await fetch(`${OPENROUTER_BASE}/chat/completions`, {
     method: "POST",
@@ -59,10 +59,10 @@ async function extractMetadata(
         {
           role: "system",
           content: `Extract metadata from the user's captured thought. Return JSON with:
-- "people": array of people mentioned (empty if none)
+- "people": array of people mentioned (empty if none). NEVER include the author Christopher Rehm (any variant: "Christopher", "Chris", "Chris Rehm") — he is the implicit subject of every thought; list only OTHER people.
 - "action_items": array of implied to-dos (empty if none)
 - "dates_mentioned": array of dates YYYY-MM-DD (empty if none)
-- "topics": array of 5 to 7 short topic tags (always at least one)
+- "topics": array of 1-5 short topic tags (always at least one). Prefer reusing the known topic areas below over inventing new ones.
 - "type": one of "observation", "task", "idea", "reference", "person_note"
 Only extract what's explicitly there.${hintSection}`,
         },
@@ -90,6 +90,15 @@ function detectProject(text: string): string {
   return "general";
 }
 
+// spec 3.3: the author is the implicit subject of every thought — never tag him.
+const SELF_TAGS = new Set([
+  "christopher rehm",
+  "chris rehm",
+  "christopher",
+  "chris",
+  "c. rehm",
+]);
+
 async function normalizePeople(people: string[]): Promise<string[]> {
   const [aliasRes, exclusionRes] = await Promise.all([
     supabase.from("people_aliases").select("alias, canonical_name"),
@@ -106,7 +115,8 @@ async function normalizePeople(people: string[]): Promise<string[]> {
 
   const normalized = people
     .map((p) => aliasMap.get(p) ?? p)
-    .filter((p) => !exclusions.has(p));
+    .filter((p) => !exclusions.has(p))
+    .filter((p) => !SELF_TAGS.has(p.toLowerCase()));
 
   return [...new Set(normalized)];
 }

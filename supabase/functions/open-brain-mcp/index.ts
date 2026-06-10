@@ -70,6 +70,16 @@ function detectProject(text: string): string {
   return "general";
 }
 
+// spec 3.3: the author is the implicit subject of every thought — a "Christopher
+// Rehm" tag on 141/249 rows carried zero information. Hard-filter all variants.
+const SELF_TAGS = new Set([
+  "christopher rehm",
+  "chris rehm",
+  "christopher",
+  "chris",
+  "c. rehm",
+]);
+
 async function normalizePeople(people: string[]): Promise<string[]> {
   if (!people.length) return people;
   const [aliasRes, exclusionRes] = await Promise.all([
@@ -89,7 +99,8 @@ async function normalizePeople(people: string[]): Promise<string[]> {
     ...new Set(
       people
         .map((p) => aliasMap.get(p.toLowerCase()) ?? p)
-        .filter((p) => !exclusions.has(p.toLowerCase())),
+        .filter((p) => !exclusions.has(p.toLowerCase()))
+        .filter((p) => !SELF_TAGS.has(p.toLowerCase())),
     ),
   ];
 }
@@ -113,7 +124,7 @@ async function extractMetadata(
   hintBlock = "",
 ): Promise<Record<string, unknown>> {
   const hintSection = hintBlock
-    ? `\n\nThe user works across many domains. Here are known topic areas to be aware of when extracting topics. Use these as guidance but also extract any other relevant topics you identify:\n\n${hintBlock}`
+    ? `\n\nControlled topic vocabulary. FIRST try to match against these known topic areas; only invent a new topic when none of them fits:\n\n${hintBlock}`
     : "";
   const r = await fetch(`${OPENROUTER_BASE}/chat/completions`, {
     method: "POST",
@@ -128,10 +139,10 @@ async function extractMetadata(
         {
           role: "system",
           content: `Extract metadata from the user's captured thought. Return JSON with:
-- "people": array of people mentioned (empty if none)
+- "people": array of people mentioned (empty if none). NEVER include the author Christopher Rehm (any variant: "Christopher", "Chris", "Chris Rehm") — he is the implicit subject of every thought; list only OTHER people.
 - "action_items": array of implied to-dos (empty if none)
 - "dates_mentioned": array of dates YYYY-MM-DD (empty if none)
-- "topics": array of 5-7 short topic tags (always at least one)
+- "topics": array of 1-5 short topic tags (always at least one). Prefer reusing the known topic areas below over inventing new ones.
 - "type": one of "observation", "task", "idea", "reference", "person_note"
 Only extract what's explicitly there.${hintSection}`,
         },
@@ -144,6 +155,46 @@ Only extract what's explicitly there.${hintSection}`,
     return JSON.parse(d.choices[0].message.content);
   } catch {
     return { topics: ["uncategorized"], type: "observation" };
+  }
+}
+
+// --- Read instrumentation (spec 3.4) ---
+
+/**
+ * Fire-and-forget: failures are logged and swallowed; a read response is
+ * never blocked or degraded by instrumentation.
+ */
+async function recordRetrieval(
+  tool: string,
+  query: string | null,
+  ids: string[],
+): Promise<void> {
+  try {
+    if (!ids.length) return;
+    const [inc, log] = await Promise.all([
+      supabase.rpc("increment_retrieval", { ids }),
+      supabase.from("retrieval_log").insert({ tool, query, result_ids: ids }),
+    ]);
+    if (inc.error || log.error) {
+      console.error(
+        JSON.stringify({
+          level: "warn",
+          where: "recordRetrieval",
+          tool,
+          inc_error: inc.error?.message ?? null,
+          log_error: log.error?.message ?? null,
+        }),
+      );
+    }
+  } catch (err) {
+    console.error(
+      JSON.stringify({
+        level: "warn",
+        where: "recordRetrieval",
+        tool,
+        error: String(err),
+      }),
+    );
   }
 }
 
@@ -257,6 +308,11 @@ server.registerTool(
           i: number,
         ) => formatThought(t, i, truncState),
       );
+      await recordRetrieval(
+        "search_thoughts",
+        query,
+        data.map((t: { id: string }) => t.id),
+      );
       const note = truncState.any ? `\n\n${TRUNCATION_NOTE}` : "";
       return {
         content: [
@@ -359,6 +415,11 @@ server.registerTool(
           if (body.truncated) truncState.any = true;
           return `${i + 1}. [${new Date(t.created_at).toLocaleDateString()}] (${m.type || "??"}${tags ? " - " + tags : ""}${proj}${stat})\n   ID: ${t.id}\n   ${body.text}`;
         },
+      );
+      await recordRetrieval(
+        "list_thoughts",
+        null,
+        data.map((t: { id: string }) => t.id),
       );
       const note = truncState.any ? `\n\n${TRUNCATION_NOTE}` : "";
       return {
@@ -1207,6 +1268,9 @@ server.registerTool(
         );
       }
 
+      // entry points + every connected thought actually returned
+      await recordRetrieval("search_with_graph", query, [...seenConnected]);
+
       return { content: [{ type: "text" as const, text: lines.join("\n") }] };
     } catch (err: unknown) {
       return {
@@ -1342,12 +1406,110 @@ server.registerTool(
           ],
           isError: true,
         };
+      await recordRetrieval("get_thought", null, [data.id]);
       const lines = [
         `ID: ${data.id}`,
         `Captured: ${new Date(data.created_at).toLocaleDateString()}`,
         `Metadata: ${JSON.stringify(data.metadata ?? {}, null, 2)}`,
         "",
         data.content,
+      ];
+      return { content: [{ type: "text" as const, text: lines.join("\n") }] };
+    } catch (err: unknown) {
+      return {
+        content: [
+          { type: "text" as const, text: `Error: ${(err as Error).message}` },
+        ],
+        isError: true,
+      };
+    }
+  },
+);
+
+// ─── v2 Tool 15: retrieval_stats (spec 3.4) ──────────────────────────────────
+
+server.registerTool(
+  "retrieval_stats",
+  {
+    title: "Retrieval Statistics",
+    description:
+      "Read-side instrumentation report: reads by tool, most-retrieved thoughts, " +
+      "never-retrieved share, and reads-per-day trend. Use this to judge what the " +
+      "memory is actually worth.",
+    inputSchema: {
+      days: z
+        .number()
+        .optional()
+        .default(30)
+        .describe("Lookback window in days"),
+    },
+  },
+  async ({ days }) => {
+    try {
+      const lookback = days ?? 30;
+      const since = new Date(Date.now() - lookback * 86400000).toISOString();
+
+      const [logsRes, totalRes, neverRes, topRes] = await Promise.all([
+        supabase
+          .from("retrieval_log")
+          .select("tool, ts")
+          .gte("ts", since)
+          .limit(10000),
+        supabase.from("thoughts").select("*", { count: "exact", head: true }),
+        supabase
+          .from("thoughts")
+          .select("*", { count: "exact", head: true })
+          .eq("retrieval_count", 0),
+        supabase
+          .from("thoughts")
+          .select("id, content, metadata, retrieval_count, last_retrieved_at")
+          .gt("retrieval_count", 0)
+          .order("retrieval_count", { ascending: false })
+          .limit(10),
+      ]);
+      if (logsRes.error)
+        return {
+          content: [
+            { type: "text" as const, text: `Error: ${logsRes.error.message}` },
+          ],
+          isError: true,
+        };
+
+      const byTool: Record<string, number> = {};
+      const byDay: Record<string, number> = {};
+      for (const row of logsRes.data ?? []) {
+        byTool[row.tool] = (byTool[row.tool] || 0) + 1;
+        const day = (row.ts as string).slice(0, 10);
+        byDay[day] = (byDay[day] || 0) + 1;
+      }
+
+      const total = totalRes.count ?? 0;
+      const never = neverRes.count ?? 0;
+      const lines: string[] = [
+        `Retrieval stats — last ${lookback} day(s)`,
+        "",
+        `Reads by tool (${(logsRes.data ?? []).length} total):`,
+        ...Object.entries(byTool)
+          .sort((a, b) => b[1] - a[1])
+          .map(([k, v]) => `  ${k}: ${v}`),
+        "",
+        `Never-retrieved thoughts: ${never}/${total} (${total ? ((never / total) * 100).toFixed(0) : 0}%)`,
+        "",
+        "Top 10 most-retrieved:",
+        ...(topRes.data ?? []).map(
+          (t: {
+            id: string;
+            content: string;
+            metadata: Record<string, unknown>;
+            retrieval_count: number;
+          }) =>
+            `  [${t.retrieval_count}x] ${t.id} — ${truncateWords(t.content, 15).text}`,
+        ),
+        "",
+        "Reads per day:",
+        ...Object.entries(byDay)
+          .sort()
+          .map(([d, n]) => `  ${d}: ${n}`),
       ];
       return { content: [{ type: "text" as const, text: lines.join("\n") }] };
     } catch (err: unknown) {
