@@ -144,6 +144,7 @@ async function extractMetadata(
 - "dates_mentioned": array of dates YYYY-MM-DD (empty if none)
 - "topics": array of 1-5 short topic tags (always at least one). Prefer reusing the known topic areas below over inventing new ones.
 - "type": one of "observation", "task", "idea", "reference", "person_note"
+- "single_topic": boolean — true if the thought makes one claim about one topic, false if it bundles several topics or claims
 Only extract what's explicitly there.${hintSection}`,
         },
         { role: "user", content: text },
@@ -505,12 +506,16 @@ server.registerTool(
 );
 
 // Tool 4: capture_thought
+const KNOWLEDGE_MAX_WORDS = 70;
+
 server.registerTool(
   "capture_thought",
   {
     title: "Capture Thought",
     description:
-      "Save a new thought to the Open Brain. Generates an embedding and extracts metadata automatically.",
+      "Save a new thought to the Open Brain. Generates an embedding and extracts metadata automatically. " +
+      "lane='journal' (default) for session summaries, tasks, observations. " +
+      "lane='knowledge' for atomic, single-topic insights (≤60 words) — these feed the insight graph.",
     inputSchema: {
       content: z
         .string()
@@ -523,21 +528,57 @@ server.registerTool(
         .describe(
           "Project this thought belongs to. Auto-detected from content if omitted.",
         ),
+      lane: z
+        .enum(["journal", "knowledge"])
+        .optional()
+        .default("journal")
+        .describe(
+          "'journal' = session state (verbose OK). 'knowledge' = one atomic claim, one topic, ≤60 words — graph material.",
+        ),
     },
   },
-  async ({ content, project }) => {
+  async ({ content, project, lane }) => {
     try {
+      const resolvedLane = lane ?? "journal";
+      // spec 4.1: hard atomicity gate for the knowledge lane — cheap check first
+      if (resolvedLane === "knowledge") {
+        const wordCount = content.split(/\s+/).filter(Boolean).length;
+        if (wordCount > KNOWLEDGE_MAX_WORDS) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: `Rejected: knowledge-lane thoughts must be atomic (≤60 words, one claim, one topic); this one has ${wordCount} words. Split it into separate insights and capture each on its own, or capture it as lane='journal'.`,
+              },
+            ],
+            isError: true,
+          };
+        }
+      }
       const [embedding, metadata] = await Promise.all([
         getEmbedding(content),
         fetchTopicHints().then((hints) => extractMetadata(content, hints)),
       ]);
       const meta = metadata as Record<string, unknown>;
+      if (resolvedLane === "knowledge" && meta.single_topic === false) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: "Rejected: this reads as multi-topic. Knowledge-lane thoughts must make ONE claim about ONE topic. Split it into separate insights and capture each on its own.",
+            },
+          ],
+          isError: true,
+        };
+      }
+      delete meta.single_topic;
       if (Array.isArray(meta.people))
         meta.people = await normalizePeople(meta.people as string[]);
       const resolvedProject = project ?? detectProject(content);
       const { error } = await supabase.from("thoughts").insert({
         content,
         embedding,
+        lane: resolvedLane,
         metadata: {
           ...meta,
           source: "mcp",
@@ -555,7 +596,7 @@ server.registerTool(
           ],
           isError: true,
         };
-      let confirmation = `Captured as ${meta.type || "thought"} [${resolvedProject}]`;
+      let confirmation = `Captured as ${meta.type || "thought"} [${resolvedProject}]${resolvedLane === "knowledge" ? " (knowledge lane)" : ""}`;
       if (Array.isArray(meta.topics) && meta.topics.length)
         confirmation += ` — ${(meta.topics as string[]).join(", ")}`;
       if (Array.isArray(meta.people) && meta.people.length)
@@ -563,6 +604,140 @@ server.registerTool(
       if (Array.isArray(meta.action_items) && meta.action_items.length)
         confirmation += ` | Actions: ${(meta.action_items as string[]).join("; ")}`;
       return { content: [{ type: "text" as const, text: confirmation }] };
+    } catch (err: unknown) {
+      return {
+        content: [
+          { type: "text" as const, text: `Error: ${(err as Error).message}` },
+        ],
+        isError: true,
+      };
+    }
+  },
+);
+
+// ─── v2 Tool: distill_session (spec 4.2) ─────────────────────────────────────
+
+server.registerTool(
+  "distill_session",
+  {
+    title: "Distill Session Insights",
+    description:
+      "Session-close step 3: store 1-3 atomic insights distilled from a just-captured journal summary. " +
+      "Insights are what was LEARNED, not what was done — one claim, one topic, ≤60 words each. " +
+      "Each is stored on the knowledge lane and linked to the source session for traceability.",
+    inputSchema: {
+      session_summary_id: z
+        .string()
+        .uuid()
+        .describe("UUID of the just-captured journal summary thought"),
+      insights: z
+        .array(
+          z.object({
+            content: z
+              .string()
+              .describe("One atomic insight, ≤60 words, single topic"),
+            topics: z.array(z.string()).optional(),
+          }),
+        )
+        .min(1)
+        .max(3)
+        .describe("1-3 atomic insights"),
+    },
+  },
+  async ({ session_summary_id, insights }) => {
+    try {
+      // Verify the source session exists so linkage is never dangling.
+      const { data: sourceRow, error: sourceError } = await supabase
+        .from("thoughts")
+        .select("id, metadata")
+        .eq("id", session_summary_id)
+        .maybeSingle();
+      if (sourceError)
+        return {
+          content: [
+            { type: "text" as const, text: `Error: ${sourceError.message}` },
+          ],
+          isError: true,
+        };
+      if (!sourceRow)
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Error: no thought with id ${session_summary_id} — capture the journal summary first, then distill.`,
+            },
+          ],
+          isError: true,
+        };
+
+      // Atomicity gate before any writes — reject the whole batch with guidance.
+      for (const ins of insights) {
+        const wordCount = ins.content.split(/\s+/).filter(Boolean).length;
+        if (wordCount > 60) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: `Rejected: insight "${ins.content.slice(0, 60)}…" has ${wordCount} words (max 60). Distill it further — one claim, one topic.`,
+              },
+            ],
+            isError: true,
+          };
+        }
+      }
+
+      const sourceMeta = (sourceRow.metadata ?? {}) as Record<string, unknown>;
+      const project = (sourceMeta.project as string) ?? "general";
+      const stored: string[] = [];
+      const failed: string[] = [];
+
+      for (const ins of insights) {
+        try {
+          const embedding = await getEmbedding(ins.content);
+          let topics = ins.topics;
+          if (!topics || !topics.length) {
+            const extracted = await fetchTopicHints().then((hints) =>
+              extractMetadata(ins.content, hints),
+            );
+            topics = Array.isArray(extracted.topics)
+              ? (extracted.topics as string[])
+              : ["uncategorized"];
+          }
+          const { data: row, error } = await supabase
+            .from("thoughts")
+            .insert({
+              content: ins.content,
+              embedding,
+              lane: "knowledge",
+              metadata: {
+                type: "insight",
+                topics,
+                people: [],
+                source: "mcp",
+                status: "active",
+                project,
+                source_session_id: session_summary_id,
+              },
+            })
+            .select("id")
+            .single();
+          if (error)
+            failed.push(`"${ins.content.slice(0, 40)}…": ${error.message}`);
+          else stored.push(row.id);
+        } catch (err) {
+          failed.push(`"${ins.content.slice(0, 40)}…": ${String(err)}`);
+        }
+      }
+
+      const lines = [
+        `Distilled ${stored.length}/${insights.length} insight(s) from session ${session_summary_id}`,
+        ...stored.map((id) => `  ✓ ${id}`),
+        ...failed.map((f) => `  ✗ ${f}`),
+      ];
+      return {
+        content: [{ type: "text" as const, text: lines.join("\n") }],
+        ...(failed.length ? { isError: true } : {}),
+      };
     } catch (err: unknown) {
       return {
         content: [
