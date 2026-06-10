@@ -1601,6 +1601,95 @@ server.registerTool(
   },
 );
 
+// ─── v2 Tool: list_pending_edges (spec 4.4) ──────────────────────────────────
+
+server.registerTool(
+  "list_pending_edges",
+  {
+    title: "List Pending Edges",
+    description:
+      "Weekly edge review: list dream-job proposals awaiting confirmation, newest first, " +
+      "with both node contents in full, the machine rationale, and proposal date. " +
+      "Confirm the genuinely interesting with confirm_edge; reject the trivial — honestly. " +
+      "Confirming weak edges to feel productive corrupts the graph.",
+    inputSchema: {
+      limit: z.number().optional().default(10),
+    },
+  },
+  async ({ limit }) => {
+    try {
+      const { data: edges, error } = await supabase
+        .from("thought_edges")
+        .select(
+          "id, source_id, target_id, label, weight, insight, rationale, created_at",
+        )
+        .is("confirmed", null)
+        .order("created_at", { ascending: false })
+        .limit(limit ?? 10);
+      if (error)
+        return {
+          content: [{ type: "text" as const, text: `Error: ${error.message}` }],
+          isError: true,
+        };
+      if (!edges || edges.length === 0)
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: "No pending edge proposals. Either the dream job hasn't proposed anything this week, or everything is already reviewed.",
+            },
+          ],
+        };
+
+      const nodeIds = [
+        ...new Set(
+          edges.flatMap((e: { source_id: string; target_id: string }) => [
+            e.source_id,
+            e.target_id,
+          ]),
+        ),
+      ];
+      const { data: nodes } = await supabase
+        .from("thoughts")
+        .select("id, content, metadata")
+        .in("id", nodeIds);
+      type EdgeNode = {
+        id: string;
+        content: string;
+        metadata: Record<string, unknown>;
+      };
+      const nodeMap = new Map<string, EdgeNode>(
+        ((nodes ?? []) as EdgeNode[]).map((n) => [n.id, n]),
+      );
+
+      const lines: string[] = [
+        `${edges.length} pending edge proposal(s) — confirm_edge(edge_id, true/false):\n`,
+      ];
+      for (const edge of edges) {
+        const a = nodeMap.get(edge.source_id);
+        const b = nodeMap.get(edge.target_id);
+        lines.push(
+          `── EDGE ${edge.id}`,
+          `   ${edge.label} | ${(edge.weight * 100).toFixed(0)}% | proposed ${new Date(edge.created_at).toLocaleDateString()}`,
+          `   RATIONALE: ${edge.rationale ?? edge.insight ?? "(none)"}`,
+          `   INSIGHT: ${edge.insight ?? "(none)"}`,
+          `   A [${(a?.metadata?.project as string) ?? "?"}]: ${a?.content ?? "(missing)"}`,
+          `   B [${(b?.metadata?.project as string) ?? "?"}]: ${b?.content ?? "(missing)"}`,
+          "",
+        );
+      }
+      return { content: [{ type: "text" as const, text: lines.join("\n") }] };
+    } catch (err: unknown) {
+      return {
+        content: [
+          { type: "text" as const, text: `Error: ${(err as Error).message}` },
+        ],
+        isError: true,
+      };
+    }
+  },
+);
+
 // ─── v2 Tool 15: retrieval_stats (spec 3.4) ──────────────────────────────────
 
 server.registerTool(
