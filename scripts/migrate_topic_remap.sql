@@ -1,8 +1,8 @@
--- One-time topic remap (spec 3.3) — DO NOT RUN until the vocabulary in
--- docs/TOPIC_CONSOLIDATION_PROPOSAL.md is approved. Idempotent.
+-- One-time topic remap (spec 3.3) — APPROVED & EXECUTED 2026-06-11.
+-- 155 rows remapped, 0 old tags remaining. Idempotent; kept for the record.
 --
--- The remap table mirrors the approved proposal; edit it there first if the
--- approved list differs.
+-- The remap table mirrors the approved proposal in
+-- docs/TOPIC_CONSOLIDATION_PROPOSAL.md.
 
 -- ── Section 1: DRY RUN — prints before/after topics for every affected row ───
 with remap(old, new) as (

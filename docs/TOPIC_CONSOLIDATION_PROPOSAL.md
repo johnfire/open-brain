@@ -1,9 +1,12 @@
-# Topic Vocabulary Consolidation — AWAITING CHRISTOPHER'S APPROVAL
+# Topic Vocabulary Consolidation — APPROVED & EXECUTED 2026-06-11
 
-Spec 3.3 requires a controlled topic vocabulary seeded into `topic_hints`, with the
-final list approved by Christopher before seeding. This proposal is built from the
-actual topic distribution of all 252 thoughts (2026-06-10). Nothing here has been
-executed.
+Approved by Christopher 2026-06-11 and executed the same day: 50 old hints
+deactivated, the 14 hints below seeded as the active vocabulary, and the remap
+applied to 155 existing thoughts (0 old tags remain). `client acquisition` /
+`networking` were left untouched pending his call (see footnote).
+
+Original proposal below, built from the actual topic distribution of all 252
+thoughts (2026-06-10).
 
 ## Current state
 
