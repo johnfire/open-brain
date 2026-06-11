@@ -79,14 +79,14 @@ Every retrieval (search, list, get, graph search) increments `retrieval_count` o
 **Topics:** `add_topic_hint`, `list_topic_hints`
 **Artifact handoff (claude.ai → Claude Code):** `push_artifact`, `get_artifacts`, `complete_artifact`
 
-## What is waiting on your approval
+## Topic consolidation — approved & executed 2026-06-11
 
-Two things were prepared but deliberately **not executed** (per the spec, vocabulary changes need your sign-off):
+Per the spec, vocabulary changes needed Christopher's sign-off; he approved on 11 June 2026 and both steps ran the same day:
 
-1. **Topic consolidation** — [TOPIC_CONSOLIDATION_PROPOSAL.md](TOPIC_CONSOLIDATION_PROPOSAL.md) proposes a 14-hint controlled vocabulary derived from the live topic distribution. Approving it means seeding `topic_hints` with those 14.
-2. **Topic remap** — [scripts/migrate_topic_remap.sql](../scripts/migrate_topic_remap.sql) rewrites existing thoughts' scattershot tags onto the approved vocabulary. The dry-run section is ready; the write section is commented out until the proposal is approved.
+1. **Topic consolidation** — the 14-hint controlled vocabulary from [TOPIC_CONSOLIDATION_PROPOSAL.md](TOPIC_CONSOLIDATION_PROPOSAL.md) is now seeded in `topic_hints`; the 50 old hints were deactivated (kept for history).
+2. **Topic remap** — [scripts/migrate_topic_remap.sql](../scripts/migrate_topic_remap.sql) remapped 155 existing thoughts onto the new vocabulary; zero old tags remain.
 
-Say the word and both run in minutes.
+Still open (your call, flagged in the proposal): whether `client acquisition` / `networking` tags should fold into `art-business` or `consultancy` — they were left untouched.
 
 ## Where everything lives
 
