@@ -1,6 +1,6 @@
 # Open Brain ++ — The v2 System Explained
 
-_Written 11 June 2026, after the v2 implementation (Sessions A–D of [open-brain-v2-spec.md](open-brain-v2-spec.md)). This is the plain-language companion: what the system is now, why it changed, and how to live with it._
+_Written 11 June 2026, after the v2 implementation (Sessions A–D of [open-brain-v2-spec.md](older-docs/open-brain-v2-spec.md)). This is the plain-language companion: what the system is now, why it changed, and how to live with it._
 
 ---
 
@@ -83,7 +83,7 @@ Every retrieval (search, list, get, graph search) increments `retrieval_count` o
 
 Per the spec, vocabulary changes needed Christopher's sign-off; he approved on 11 June 2026 and both steps ran the same day:
 
-1. **Topic consolidation** — the 14-hint controlled vocabulary from [TOPIC_CONSOLIDATION_PROPOSAL.md](TOPIC_CONSOLIDATION_PROPOSAL.md) is now seeded in `topic_hints`; the 50 old hints were deactivated (kept for history).
+1. **Topic consolidation** — the 14-hint controlled vocabulary from [TOPIC_CONSOLIDATION_PROPOSAL.md](older-docs/TOPIC_CONSOLIDATION_PROPOSAL.md) is now seeded in `topic_hints`; the 50 old hints were deactivated (kept for history).
 2. **Topic remap** — [scripts/migrate_topic_remap.sql](../scripts/migrate_topic_remap.sql) remapped 155 existing thoughts onto the new vocabulary; zero old tags remain.
 
 Still open (your call, flagged in the proposal): whether `client acquisition` / `networking` tags should fold into `art-business` or `consultancy` — they were left untouched.
@@ -92,5 +92,5 @@ Still open (your call, flagged in the proposal): whether `client acquisition` / 
 
 - **Repo (single source of truth):** `~/ppp2/open-brain` — all three edge functions (`open-brain-mcp`, `ingest-thought`, `dream`), migrations, scripts, docs. The deployed code is exactly what's committed.
 - **Live:** Supabase project `qaonmvqhlvrrvfkqcjbf` — `open-brain-mcp` v12, `ingest-thought` v13, `dream` v3, all migrations applied.
-- **Spec:** [open-brain-v2-spec.md](open-brain-v2-spec.md). **Pre-v2 schema snapshot:** [SCHEMA_BASELINE_20260610.md](SCHEMA_BASELINE_20260610.md).
+- **Spec:** [open-brain-v2-spec.md](older-docs/open-brain-v2-spec.md). **Pre-v2 schema snapshot:** [SCHEMA_BASELINE_20260610.md](older-docs/SCHEMA_BASELINE_20260610.md).
 - **Protocols:** the Open Brain block in `~/.claude/CLAUDE.md`.
