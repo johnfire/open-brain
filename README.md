@@ -16,7 +16,8 @@ Read the one relevant to your task.
 
 | Doc | Read when… |
 | --- | --- |
-| [docs/OPEN_BRAIN_PLUS_PLUS.md](docs/OPEN_BRAIN_PLUS_PLUS.md) | **Canonical overview** — what the v2 system is, the two lanes, the 17 tools, where everything lives. Keep current; update in place. |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | **Full architecture reference** — topology, data model, the two lanes, ingestion/retrieval/dream pipelines, the 17 tools, ops, and the fleet usage layer. Start here for the whole system. (`ARCHITECTURE.pdf` is the rendered copy.) |
+| [docs/OPEN_BRAIN_PLUS_PLUS.md](docs/OPEN_BRAIN_PLUS_PLUS.md) | **v2 change narrative** — what changed from v1 and *why* (the two-lane rationale, the rescoped dream job). Companion to the architecture reference. |
 | [docs/LECHAT_CONNECTOR.md](docs/LECHAT_CONNECTOR.md) | Connecting an external MCP client (Le Chat / Mistral) — URL, auth, setup, the read/write tool split. |
 | [docs/older-docs/](docs/older-docs/) | Archive — the v2 implementation spec (shipped), the pre-v2 schema snapshot, the executed topic-consolidation proposal. Historical reference only. |
 
