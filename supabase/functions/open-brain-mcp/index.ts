@@ -1792,14 +1792,47 @@ server.registerTool(
 const app = new Hono();
 
 app.all("*", async (c) => {
-  // Support both custom x-brain-key header and standard Authorization: Bearer
+  const url = new URL(c.req.url);
+  const base = url.pathname.endsWith("/")
+    ? url.pathname.slice(0, -1)
+    : url.pathname;
+
+  // OAuth protected-resource metadata (RFC 9728) — tells MCP clients (e.g. the
+  // claude.ai connector) where the OAuth 2.1 authorization server for this
+  // resource lives. Matched by suffix rather than exact path since Supabase may
+  // or may not strip the /functions/v1/open-brain-mcp prefix before this runs.
+  // Built from SUPABASE_URL rather than the request's own origin/href — the
+  // edge runtime terminates TLS and forwards internally as http://, so
+  // url.origin reports the wrong scheme for a URL meant to be fetched
+  // externally over https.
+  if (url.pathname.endsWith("/.well-known/oauth-protected-resource")) {
+    const resource = `${SUPABASE_URL}${base.replace(/\/\.well-known\/oauth-protected-resource$/, "")}`;
+    return c.json({
+      resource,
+      authorization_servers: [`${SUPABASE_URL}/auth/v1`],
+    });
+  }
+
+  // Support both the static access key (x-brain-key header, ?key= query param,
+  // or Authorization: Bearer — used by Claude Code CLI and Le Chat) and a
+  // Supabase-issued OAuth access token (used by the claude.ai connector, minted
+  // via Supabase Auth's OAuth 2.1 server after Christopher approves the grant).
   const provided =
     c.req.header("x-brain-key") ||
-    new URL(c.req.url).searchParams.get("key") ||
+    url.searchParams.get("key") ||
     c.req.header("Authorization")?.replace("Bearer ", "");
-  if (!provided || provided !== MCP_ACCESS_KEY) {
+
+  const authorized = provided === MCP_ACCESS_KEY ||
+    (!!provided && !(await supabase.auth.getUser(provided)).error);
+
+  if (!authorized) {
+    c.header(
+      "WWW-Authenticate",
+      `Bearer resource_metadata="${SUPABASE_URL}${base}/.well-known/oauth-protected-resource"`,
+    );
     return c.json({ error: "Invalid or missing access key" }, 401);
   }
+
   const transport = new StreamableHTTPTransport();
   await server.connect(transport);
   return transport.handleRequest(c);

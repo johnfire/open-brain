@@ -249,7 +249,7 @@ The artifact tools (`push_artifact` / `get_artifacts` / `complete_artifact`) wer
 - **Never upload credentials** — Open Brain is a shared brain with no per-doc access control.
 - **Sensitive docs are pointer-only** — the content stays local; the artifact is a stub instructing any AI to *stop and ask Chris*. The content never touching the cloud is the only real "ask first" gate.
 
-**Session-start wiring:** `~/.claude/CLAUDE.md` instructs Claude Code to pull `context-core` at session start and fetch domain docs on demand. Claude.ai carries the same instruction in its profile; Hermes calls it in its startup. The procedure is captured as the **`add-context-doc`** skill (fleet-synced under `~/.claude/skills/` → `~/ai-workzone/AI-general-docs/claude-skills/`).
+**Session-start wiring:** `~/.claude/CLAUDE.md` instructs Claude Code to pull `context-core` at session start and fetch domain docs on demand. Claude.ai carries the same instruction in its profile; Hermes calls it in its startup. The procedure is captured as the **`add-context-doc`** skill (fleet-synced under `~/.claude/skills/` → `~/ai-workzone/AI/skills/`).
 
 ---
 

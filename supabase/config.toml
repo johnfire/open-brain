@@ -388,6 +388,11 @@ enabled = true
 verify_jwt = false
 entrypoint = "./functions/ingest-thought/index.ts"
 
+[functions.open-brain-consent]
+enabled = true
+verify_jwt = false
+entrypoint = "./functions/open-brain-consent/index.ts"
+
 [functions.open-brain-mcp]
 enabled = true
 verify_jwt = true
